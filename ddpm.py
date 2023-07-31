@@ -79,7 +79,11 @@ class DDPM(nn.Module):
         
         return noise, x_t, cls, timestep / self.T, ctx_mask
 
-
+    def A(self,x):
+        return self.alpha_t*x-x     
+    def dA(self,x):
+        return self.alpha_t-1
+         
     def sample(self, num_samples, size=(1,28,28), num_cls=10, guide_w = 0.0):
 
         x_i = torch.randn(num_samples, *size).cuda() 

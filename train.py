@@ -61,9 +61,12 @@ train :学習の1 step(epoch)
 """
 def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch):
     img_size=(1,28,28)
-
+    n_generate_sample=100
     unet.train()
     ddpm_model.train()
+
+
+
 
     wandb.log({
         'Epoch': epoch
@@ -90,6 +93,7 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
         scaler.update()
 
 
+
         loss_.update(loss.detach(), img.size(0))
 
         if idx % 200 == 0:
@@ -101,8 +105,12 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
 
     if epoch % 2 == 0:
 
+
+
+
       ddpm_model.eval()
       TUR_samples=[]
+      
       with torch.no_grad():
             n_sample = 4*num_cls
             #普通のサンプリング
@@ -113,34 +121,53 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
                 if(isTURsample):
                     TUR_lhs=[]
                     TUR_rhs=[]
-                    x= torch.randn(img_size).cuda() 
-                    xo= torch.randn(img_size).cuda() 
-                    for i in range(TUR_samplenum):
-                    #compute LHS of TUR: entoropy production= j^T B^{-1} j/p
-                        _lhs=0
-                        _var=_r2=0
-                        for i in range(TUR_samplenum):
-                            x= ddpm_model.sample1(xo,t,z,eps)
-                            _lhs+= torch.dot(current(x,xo),current(x,xo))/ddpm_model.sqrt_beta_t[t]
-                            xo=x
-                            
-                    #compute RHS of TUR: <R>^2/Var<R> of variable R
-                    x= torch.randn(img_size).cuda() 
-                    xo= torch.randn(img_size).cuda() 
-                    _var=0
-                    _r1=0
-                    _r0=obs(xo,xo)
-                    for i in range(TUR_samplenum):
-                            x= ddpm_model.sample1(n_sample,img_size, num_cls,w)
-                            rd=obs(x,xo)-_r0
-                            _r1 += rd
-                            _r2 += torch.dot(rd,rd)
-                            xo  =  x
-                    _var += (_r2-torch.dot(_r1,_r1)/TUR_samplenum)/(TUR_samplenum-1)
+                    #unet.train()
+                    
+                    for t in range(n_generate_sample):
+                        x= torch.randn(img_size).cuda() 
+                        xo= torch.randn(img_size).cuda() 
 
-                    TUR_lhs.append(_lhs.detach().cpu().numpy())
-                    TUR_rhs.append(( 2*_r2/_var).detach().cpu().numpy())
-                TUR_samples=[TUR_lhs,TUR_rhs]
+                        z = torch.randn(num_samples,*img_size).cuda()
+
+                        eps = ddpm_model.model(x, c_i, t_is, ctx_mask)
+                        eps1 = eps[:num_samples]
+                        eps2 = eps[num_samples:]
+                        eps = (1 + guide_w)*eps1 - guide_w*eps2
+
+                        beta=ddpm_model.sqrt_beta_t[t]
+                        beta2=beta*beta
+                        for i in range(TUR_samplenum):
+                        #compute LHS of TUR: entoropy production= j^T B^{-1} j/P = Ai^2P+2D(nabra_i Ai)P-(nabla_i^2 logP)P
+                            _lhs=0
+                            _var=_r2=0
+                            for i in range(TUR_samplenum):
+                                x= ddpm_model.sample1(xo,t,z,eps)
+                                #_lhs+= torch.dot(current(x,xo),current(x,xo))/ddpm_model.sqrt_beta_t[t]
+                                Ai=ddpm_model.A(xo)
+                                dA=ddpm_model.dA(xo)
+                                score = unet(x.half(), ctx, timestep.half(), ctx_mask.half())
+                                score.backward()
+                                dscore= x.grad
+                                _lhs+= torch.dot(Ai,Ai) +2*beta*dA-beta2*dscore
+                                xo=x
+                                
+                        #compute RHS of TUR: <R>^2/Var<R> of variable R=obs cdot dx
+                        x= torch.randn(img_size).cuda() 
+                        xo= torch.randn(img_size).cuda() 
+                        _var=0
+                        _r1=0
+                        for i in range(TUR_samplenum):
+                                x= ddpm_model.sample1(n_sample,img_size, num_cls,w)
+                                #stratnovich obs
+                                rd=obs((x+xo)/2)*(x-xo)
+                                _r1 += rd
+                                _r2 += torch.dot(rd,rd)
+                                xo  =  x
+                        _var += (_r2-torch.dot(_r1,_r1)/TUR_samplenum)/(TUR_samplenum-1)
+
+                        TUR_lhs.append(_lhs.detach().cpu().numpy()/TUR_samplenum)
+                        TUR_rhs.append(( 2*_r2/_var).detach().cpu().numpy()/TUR_samplenum)
+                    TUR_samples=[TUR_lhs,TUR_rhs]
 
       fig, ax = plt.subplots(nrows = n_sample // num_cls, ncols = num_cls, sharex = True, sharey = True, figsize = (10, 4))
 
@@ -169,7 +196,8 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
     
     print("#sample @ epoch%d"%(epoch))
     for tur in TUR_samples:
-        print("%g,%g"%(tur[0],tur[1]))
+        print(tur)
+#        print("%g,%g"%(tur[0],tur[1]))
 
     return TUR_samples
 
