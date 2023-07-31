@@ -50,8 +50,17 @@ def plot(ddpm_model, num_cls, ws, save_dir, epoch):
     ddpm_model.train()
     return grid_arr.transpose(1,2,0)
         
-        
-def train(unet, ddpm_model, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch, num_epochs):
+TUR_samplenum=200
+
+def current(x,xo):
+    return x-xo
+
+"""
+train :学習の1 step(epoch)
+
+"""
+def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch):
+    img_size=(1,28,28)
 
     unet.train()
     ddpm_model.train()
@@ -67,7 +76,7 @@ def train(unet, ddpm_model, loader, opt, criterion, scaler, num_cls, save_dir, w
 
         img = img.cuda(non_blocking = True)
         lbl = class_lbl.cuda(non_blocking = True)
-        
+
         opt.zero_grad(set_to_none = True)
 
         with torch.cuda.amp.autocast_mode.autocast():
@@ -93,13 +102,45 @@ def train(unet, ddpm_model, loader, opt, criterion, scaler, num_cls, save_dir, w
     if epoch % 2 == 0:
 
       ddpm_model.eval()
-
+      TUR_samples=[]
       with torch.no_grad():
             n_sample = 4*num_cls
+            #普通のサンプリング
             for w_i, w in enumerate(ws):
+                x1, xis = ddpm_model.sample(n_sample, img_size, num_cls,w)
 
-                x1, xis = ddpm_model.sample(n_sample, (1, 28, 28), num_cls,w)
+            #ある学習ステップでサンプリングしたときのTURの左辺と右辺
+                if(isTURsample):
+                    TUR_lhs=[]
+                    TUR_rhs=[]
+                    x= torch.randn(img_size).cuda() 
+                    xo= torch.randn(img_size).cuda() 
+                    for i in range(TUR_samplenum):
+                    #compute LHS of TUR: entoropy production= j^T B^{-1} j/p
+                        _lhs=0
+                        _var=_r2=0
+                        for i in range(TUR_samplenum):
+                            x= ddpm_model.sample1(xo,t,z,eps)
+                            _lhs+= torch.dot(current(x,xo),current(x,xo))/ddpm_model.sqrt_beta_t[t]
+                            xo=x
+                            
+                    #compute RHS of TUR: <R>^2/Var<R> of variable R
+                    x= torch.randn(img_size).cuda() 
+                    xo= torch.randn(img_size).cuda() 
+                    _var=0
+                    _r1=0
+                    _r0=obs(xo,xo)
+                    for i in range(TUR_samplenum):
+                            x= ddpm_model.sample1(n_sample,img_size, num_cls,w)
+                            rd=obs(x,xo)-_r0
+                            _r1 += rd
+                            _r2 += torch.dot(rd,rd)
+                            xo  =  x
+                    _var += (_r2-torch.dot(_r1,_r1)/TUR_samplenum)/(TUR_samplenum-1)
 
+                    TUR_lhs.append(_lhs.detach().cpu().numpy())
+                    TUR_rhs.append(( 2*_r2/_var).detach().cpu().numpy())
+                TUR_samples=[TUR_lhs,TUR_rhs]
 
       fig, ax = plt.subplots(nrows = n_sample // num_cls, ncols = num_cls, sharex = True, sharey = True, figsize = (10, 4))
 
@@ -125,7 +166,14 @@ def train(unet, ddpm_model, loader, opt, criterion, scaler, num_cls, save_dir, w
 
       torch.save(ddpm_model.state_dict(), os.path.join(save_dir, f'ddpm.pth'))
       torch.save(unet.state_dict(), os.path.join(save_dir, f'unet.pth'))
+    
+    print("#sample @ epoch%d"%(epoch))
+    for tur in TUR_samples:
+        print("%g,%g"%(tur[0],tur[1]))
 
+    return TUR_samples
+
+isTURsample=True
 
 def main():
 
@@ -150,8 +198,7 @@ def main():
     ws = [0.0, 0.5, 1.0]
 
     for epoch in range(num_epochs):
-
-        train(unet, ddpm_model, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch, num_epochs)
+        TUR_samples=train(unet, ddpm_model, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch)
 
 
 if __name__ == '__main__':

@@ -80,7 +80,7 @@ class DDPM(nn.Module):
         return noise, x_t, cls, timestep / self.T, ctx_mask
 
 
-    def sample(self, num_samples, size, num_cls, guide_w = 0.0):
+    def sample(self, num_samples, size=(1,28,28), num_cls=10, guide_w = 0.0):
 
         x_i = torch.randn(num_samples, *size).cuda() 
         c_i = torch.arange(0, num_cls).cuda()
@@ -94,6 +94,7 @@ class DDPM(nn.Module):
         #To Store intermediate results and create GIFs.
         x_is = []
 
+        # T, T-1,T-2 ...,1
         for i in range(self.T - 1, 0, -1):
             
             t_is = torch.tensor([i / self.T]).cuda()
@@ -118,3 +119,34 @@ class DDPM(nn.Module):
         
         return x_i, np.array(x_is)
 
+    def sample1(self, x,t,z, eps,num_samples=1):
+            t_is = torch.tensor([t / self.T]).cuda()
+            t_is = t_is.repeat(num_samples, 1, 1, 1)
+
+            x = x.repeat(2, 1, 1, 1)   
+            t_is = t_is.repeat(2, 1, 1, 1)
+            z = torch.randn(num_samples, *size).cuda() if i > 1 else 0
+
+            eps = self.model(x_i, c_i, t_is, ctx_mask)
+            eps1 = eps[:num_samples]
+            eps2 = eps[num_samples:]
+            eps = (1 + guide_w)*eps1 - guide_w*eps2
+            
+            x = x[:num_samples]
+            return  self.sqrt_alpha_t_inv[t] * (x - eps*self.alpha_t_div_sqrt_abar[t]) + self.sqrt_beta_t[t] * z
+    
+    def sample_inverse1(self, x,t,z, eps,num_samples=1):
+            t_is = torch.tensor([t / self.T]).cuda()
+            t_is = t_is.repeat(num_samples, 1, 1, 1)
+
+            x = x.repeat(2, 1, 1, 1)   
+            t_is = t_is.repeat(2, 1, 1, 1)
+            z = torch.randn(num_samples, *size).cuda() if i > 1 else 0
+
+            eps = self.model(x_i, c_i, t_is, ctx_mask)
+            eps1 = eps[:num_samples]
+            eps2 = eps[num_samples:]
+            eps = (1 + guide_w)*eps1 - guide_w*eps2
+            
+            x = x[:num_samples]
+            return  x-(self.sqrt_alpha_t_inv[t] * (x - eps*self.alpha_t_div_sqrt_abar[t])-x) + self.sqrt_beta_t[t] * z
