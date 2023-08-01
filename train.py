@@ -110,6 +110,8 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
 
       ddpm_model.eval()
       TUR_samples=[]
+      obs=lambda x:torch.mean(x)
+      #obs2=lambda x:torch.torch.var(x)
       
       with torch.no_grad():
             n_sample = 4*num_cls
@@ -122,7 +124,8 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
                     TUR_lhs=[]
                     TUR_rhs=[]
                     #unet.train()
-                    
+                    guide_w=ws[0]
+                    num_samples=1
                     for t in range(n_generate_sample):
                         x= torch.randn(img_size).cuda() 
                         xo= torch.randn(img_size).cuda() 
@@ -150,24 +153,23 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
                                 dscore= x.grad
                                 _lhs+= torch.dot(Ai,Ai) +2*beta*dA-beta2*dscore
                                 xo=x
-                                
-                        #compute RHS of TUR: <R>^2/Var<R> of variable R=obs cdot dx
-                        x= torch.randn(img_size).cuda() 
-                        xo= torch.randn(img_size).cuda() 
-                        _var=0
-                        _r1=0
-                        for i in range(TUR_samplenum):
+                            TUR_lhs.append(_lhs.detach().cpu().numpy()/TUR_samplenum)
+
+                            #compute RHS of TUR: <R>^2/Var<R> of variable R=obs cdot dx
+                            x= torch.randn(img_size).cuda() 
+                            xo= torch.randn(img_size).cuda() 
+                            _var=0
+                            _r1=0
+                            for i in range(TUR_samplenum):
                                 x= ddpm_model.sample1(n_sample,img_size, num_cls,w)
                                 #stratnovich obs
                                 rd=obs((x+xo)/2)*(x-xo)
                                 _r1 += rd
                                 _r2 += torch.dot(rd,rd)
                                 xo  =  x
-                        _var += (_r2-torch.dot(_r1,_r1)/TUR_samplenum)/(TUR_samplenum-1)
-
-                        TUR_lhs.append(_lhs.detach().cpu().numpy()/TUR_samplenum)
-                        TUR_rhs.append(( 2*_r2/_var).detach().cpu().numpy()/TUR_samplenum)
-                    TUR_samples=[TUR_lhs,TUR_rhs]
+                                _var += (_r2-torch.dot(_r1,_r1)/TUR_samplenum)/(TUR_samplenum-1)
+                            TUR_rhs.append(( 2*_r2/_var).detach().cpu().numpy()/TUR_samplenum)
+                        TUR_samples=[TUR_lhs,TUR_rhs]
 
       fig, ax = plt.subplots(nrows = n_sample // num_cls, ncols = num_cls, sharex = True, sharey = True, figsize = (10, 4))
 
