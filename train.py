@@ -52,9 +52,6 @@ def plot(ddpm_model, num_cls, ws, save_dir, epoch):
         
 TUR_samplenum=200
 
-def current(x,xo):
-    return x-xo
-
 """
 train :学習の1 step(epoch)
 
@@ -209,15 +206,13 @@ def main():
 
     num_cls = 10
     num_epochs = 20
-    save_dir = '/content/drive/MyDrive/Diffusion'
+    save_dir = 'result'
     unet = UNet(1, 128, num_cls).cuda()
     ddpm_model = DDPM(unet, (1e-4, 0.02)).cuda()
 
-    #unet.load_state_dict(torch.load('/content/drive/MyDrive/Diffusion/unet.pth'))
-    #ddpm_model.load_state_dict(torch.load('/content/drive/MyDrive/Diffusion/ddpm.pth'))
 
     tr = T.Compose([T.ToTensor()])
-    dataset = tv.datasets.MNIST('/content/data', True, transform = tr, download = True)
+    dataset = tv.datasets.MNIST('data', True, transform = tr, download = True)
     loader = DataLoader(dataset, batch_size = 64, shuffle = True, num_workers = 0)
 
     opt = torch.optim.Adam(list(ddpm_model.parameters()) + list(unet.parameters()), lr = 1e-4)
@@ -233,5 +228,5 @@ def main():
 
 if __name__ == '__main__':
 
-    #wandb.init(project = 'MinDiffusion')
+    wandb.init(project = 'MinDiffusion')
     main()
