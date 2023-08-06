@@ -117,12 +117,12 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
                     #unet.train()
                     guide_w=ws[0]
                     num_samples=1 #
-                    
-                    c_i = torch.arange(0, num_cls).cuda()
+                
+                    c_i = torch.arange(0, 1).cuda()                   
                     c_i = c_i.repeat(int(num_samples / c_i.shape[0]))
                     ctx_mask = torch.zeros_like(c_i).cuda()
                     c_i = c_i.repeat(2)
-                    
+
                     ctx_mask = ctx_mask.repeat(2)
                     ctx_mask[num_samples:] = 1.0
 
