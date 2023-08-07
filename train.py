@@ -153,11 +153,15 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
                         _var=_r2=0
                         for i in range(TUR_samplenum):
                             x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,eps)
-                            Ai=ddpm_model.A(xo)
-                            score = unet(x.half(), ctx, timestep.half(), ctx_mask.half())
+                            Ai=ddpm_model.A(xo,t)
+                            #with torch.cuda.amp.autocast_mode.autocast():
+                                #score = unet(x.half(), c_i, timestep.half(), ctx_mask.half())
+                                #score=ddpm_model.model(xo,c_i,t_is,ctx_mask)
+                            score=eps
 #                            score.backward()
-                            v=Ai-beta*score
-                            _lhs+= torch.dot(v,v)/(2*beta)
+                            v=torch.flatten(Ai-beta*score)
+                            v2=torch.dot(v,v)
+                            _lhs+= v2/(2*beta)
                             xo=x
                         TUR_lhs.append(_lhs.detach().cpu().numpy()/TUR_samplenum)
 
@@ -171,9 +175,9 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
                             #stratnovich obs
                             rd=obs((x+xo)/2)*(x-xo)
                             _r1 += rd
-                            _r2 += torch.dot(rd,rd)
+                            _r2 += torch.sum(rd*rd)
                             xo  =  x
-                            _var += (_r2-torch.dot(_r1,_r1)/TUR_samplenum)/(TUR_samplenum-1)
+                            _var += (_r2-torch.sum(_r1*_r1)/TUR_samplenum)/(TUR_samplenum-1)
                         TUR_rhs.append(( 2*_r2/_var).detach().cpu().numpy()/TUR_samplenum)
 
                         TUR_samples=[TUR_lhs,TUR_rhs]
