@@ -147,20 +147,17 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
                         eps = (1 + guide_w)*eps1 - guide_w*eps2
 
                         beta=ddpm_model.sqrt_beta_t[t]
-                        beta2=beta*beta
 
                         #compute LHS of TUR: entoropy production= j^T B^{-1} j/P = Ai^2P+2D(nabra_i Ai)P-(nabla_i^2 logP)P
                         _lhs=0
                         _var=_r2=0
                         for i in range(TUR_samplenum):
-                            x= ddpm_model.sample1(xo,t,z,eps)
-                            #_lhs+= torch.dot(current(x,xo),current(x,xo))/ddpm_model.sqrt_beta_t[t]
+                            x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,eps)
                             Ai=ddpm_model.A(xo)
-                            dA=ddpm_model.dA(xo)
                             score = unet(x.half(), ctx, timestep.half(), ctx_mask.half())
-                            score.backward()
-                            dscore= x.grad
-                            _lhs+= torch.dot(Ai,Ai) +2*beta*dA-beta2*dscore
+#                            score.backward()
+                            v=Ai-beta*score
+                            _lhs+= torch.dot(v,v)/(2*beta)
                             xo=x
                         TUR_lhs.append(_lhs.detach().cpu().numpy()/TUR_samplenum)
 
@@ -170,7 +167,7 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
                         _var=0
                         _r1=0
                         for i in range(TUR_samplenum):
-                            x= ddpm_model.sample1(n_sample,img_size, num_cls,w)
+                            x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,eps)
                             #stratnovich obs
                             rd=obs((x+xo)/2)*(x-xo)
                             _r1 += rd

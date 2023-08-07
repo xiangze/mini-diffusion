@@ -79,10 +79,10 @@ class DDPM(nn.Module):
         
         return noise, x_t, cls, timestep / self.T, ctx_mask
 
-    def A(self,x):
-        return self.alpha_t*x-x     
-    def dA(self,x):
-        return self.alpha_t-1
+    def A(self,x,t):
+        return self.alpha_t[t]*x-x     
+    def dA(self,x,t):
+        return self.alpha_t[t]-1
          
     def sample(self, num_samples, size=(1,28,28), num_cls=10, guide_w = 0.0):
 
@@ -123,34 +123,22 @@ class DDPM(nn.Module):
         
         return x_i, np.array(x_is)
 
-    def sample1(self, x,t,z, eps,num_samples=1):
+    def sample1(self, x,t,z,c_i,ctx_mask, eps,size=(1,28,28), guide_w = 0.0, num_samples=1):
+            '''
+            x: Image
+            t: timestep
+            z: Noise
+            c_i: Context label
+            ctx_mask: which samples to block context on
+            eps: from Unet
+            '''
             t_is = torch.tensor([t / self.T]).cuda()
             t_is = t_is.repeat(num_samples, 1, 1, 1)
 
             x = x.repeat(2, 1, 1, 1)   
             t_is = t_is.repeat(2, 1, 1, 1)
-            z = torch.randn(num_samples, *size).cuda() if i > 1 else 0
+            z = torch.randn(num_samples, *size).cuda() 
 
-            eps = self.model(x_i, c_i, t_is, ctx_mask)
-            eps1 = eps[:num_samples]
-            eps2 = eps[num_samples:]
-            eps = (1 + guide_w)*eps1 - guide_w*eps2
-            
             x = x[:num_samples]
             return  self.sqrt_alpha_t_inv[t] * (x - eps*self.alpha_t_div_sqrt_abar[t]) + self.sqrt_beta_t[t] * z
-    
-    def sample_inverse1(self, x,t,z, eps,num_samples=1):
-            t_is = torch.tensor([t / self.T]).cuda()
-            t_is = t_is.repeat(num_samples, 1, 1, 1)
-
-            x = x.repeat(2, 1, 1, 1)   
-            t_is = t_is.repeat(2, 1, 1, 1)
-            z = torch.randn(num_samples, *size).cuda() if i > 1 else 0
-
-            eps = self.model(x_i, c_i, t_is, ctx_mask)
-            eps1 = eps[:num_samples]
-            eps2 = eps[num_samples:]
-            eps = (1 + guide_w)*eps1 - guide_w*eps2
-            
-            x = x[:num_samples]
-            return  x-(self.sqrt_alpha_t_inv[t] * (x - eps*self.alpha_t_div_sqrt_abar[t])-x) + self.sqrt_beta_t[t] * z
+  
