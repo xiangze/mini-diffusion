@@ -43,6 +43,7 @@ def ddpm_schedule(beta_start, beta_end, T, scheduler_type = 'cosine'):
     alpha_t_div_sqrt_abar = (1 - alpha_t) / sqrt_abar_t1
 
     return {
+        'betas': betas,
         'sqrt_beta_t': sqrt_beta_t,
         'alpha_t': alpha_t,
         'sqrt_alpha_t_inv': sqrt_alpha_t_inv,
@@ -80,9 +81,7 @@ class DDPM(nn.Module):
         return noise, x_t, cls, timestep / self.T, ctx_mask
 
     def A(self,x,t):
-        return self.alpha_t[t]*x-x     
-    def dA(self,x,t):
-        return self.alpha_t[t]-1
+        return self.betas[t]*x/2     
          
     def sample(self, num_samples, size=(1,28,28), num_cls=10, guide_w = 0.0):
 
