@@ -50,9 +50,24 @@ def plot(ddpm_model, num_cls, ws, save_dir, epoch):
     ddpm_model.train()
     return grid_arr.transpose(1,2,0)
 
+def calc_meanvar(_r,TUR_samplenum):
+    _mean=torch.sum(_r[0])/TUR_samplenum
+    mean2=_mean*_mean
+    _var = (_r[1]/TUR_samplenum -mean2) *TUR_samplenum/(TUR_samplenum-1)
+
+    mean=_mean.detach().cpu().numpy()
+    var=_var.detach().cpu().numpy()
+    rhs=2*mean2.detach().cpu().numpy()/var
+    return mean,var,rhs
+
+def increment_1_2(_r,r):
+    _r0 = _r[0]+torch.sum(r)
+    _r1 = _r[1]+torch.sum(r*r)
+    return [_r0,_r1]    
+
 #ある学習ステップでサンプリングしたときのTURの左辺と右辺        
-def TUR_sample(ddpm_model,img_size,obs,
-               guide_w=0.0,n_generate_sample=100,TUR_samplenum=400):
+def TUR_sample(epoch,ddpm_model,img_size,obs,
+               guide_w=0.0,n_generate_sample=500,TUR_samplenum=1000):
                 """
                 ddpm_model: 拡散モデル 
                 img_size:データ(画像)サイズ
@@ -74,8 +89,7 @@ def TUR_sample(ddpm_model,img_size,obs,
 
                 TUR_lhs=[]
                 TUR_rhs=[]
-
-                for t in range(n_generate_sample):
+                for t in range(n_generate_sample - 1, 0, -1):
                     t_is = torch.tensor([t / n_generate_sample]).cuda()
                     t_is=t_is.repeat(num_samples, 1, 1, 1)
                     t_is=t_is.repeat(2, 1, 1, 1)
@@ -109,19 +123,48 @@ def TUR_sample(ddpm_model,img_size,obs,
                     #compute RHS of TUR: <R>^2/Var<R> of variable R=obs cdot dx
                     x= torch.randn(img_size).cuda() 
                     xo= torch.randn(img_size).cuda() 
-                    _var=0
-                    _r1=0
-                    _r2=0
+                    _r=[0,0]
+                    _rd=[0,0]
+                    _rx=[0,0]
+                    _r0=[0,0]
                     for i in range(TUR_samplenum):
                         z = torch.randn(num_samples,*img_size).cuda()                        
                         x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,eps)
                         #stratnovich obs
                         rd=obs((x+xo)/2)*(x-xo)
-                        _r1 += rd
-                        _r2 += torch.sum(rd*rd)
+                        r=obs((x+xo)/2)
+                        rx=obs(x)
+                        r0=x[0,0,0,0]
+
+                        _r[0] += torch.sum(r)
+                        _r[1] += torch.sum(r*r)
+                        _rd[0] += torch.sum(rd)
+                        _rd[1] += torch.sum(rd*rd)
+                        _rx[0] += torch.sum(rx)
+                        _rx[1] += torch.sum(rx*rx)
+                        _r0[0] += torch.sum(r0)
+                        _r0[1] += torch.sum(r0*r0)
+
                         xo  =  x
-                    _var = (_r2-torch.sum(_r1*_r1)/TUR_samplenum)/(TUR_samplenum-1)
-                    TUR_rhs.append(( 2*_r2/_var).detach().cpu().numpy()/TUR_samplenum)    
+
+                    #mean,var,rhs=calc_meanvar(_r,TUR_samplenum)
+                    #mean_d,var_d,rhs_d=calc_meanvar(_rd,TUR_samplenum)
+                    #mean_x,var_x,rhs_x=calc_meanvar(_rd,TUR_samplenum)
+                    rhs=calc_meanvar(_r,TUR_samplenum)
+                    rhs_d=calc_meanvar(_rd,TUR_samplenum)
+                    rhs_x=calc_meanvar(_rx,TUR_samplenum)
+                    rhs_0=calc_meanvar(_r0,TUR_samplenum)
+                    TUR_rhs.append([rhs,rhs_d,rhs_x,rhs_0])
+                    
+                #[ [TUR_lhs[i],TUR_lhs[i][0][0], ]for i in range(n_generate_sample)]
+                with open("TUR_log.csv","a") as fp:
+                    for i in range(n_generate_sample-1):
+                        fp.write("{},{},{},".format(epoch,i,TUR_lhs[i]))
+                        for r in TUR_rhs[i]:
+                            for j in r:
+                                fp.write("{},".format(j))
+                            fp.write("{},".format(TUR_lhs[i]/r[2]))
+                        fp.write("\n")
                 return [TUR_lhs,TUR_rhs]
 
 """
@@ -173,7 +216,6 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
 
 
       ddpm_model.eval()
-      TUR_samples=[]
       
       with torch.no_grad():
             n_sample = 4*num_cls
@@ -183,7 +225,7 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
 
             #ある学習ステップでサンプリングしたときのTURの左辺と右辺
             if(isTURsample):
-                TUR_samples.append(TUR_sample(ddpm_model,img_size,obs))
+                TUR_samples=TUR_sample(epoch,ddpm_model,img_size,obs)
 
       fig, ax = plt.subplots(nrows = n_sample // num_cls, ncols = num_cls, sharex = True, sharey = True, figsize = (10, 4))
 
@@ -212,14 +254,6 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
     
     print("#sample @ epoch%d"%(epoch))
 
-    with open("TUR_log.csv","a") as fp:
-        for gen_step,tur in enumerate(TUR_samples):
-            TUR_lhs=tur[0]
-            TUR_rhs=tur[1]
-            #print(len(TUR_lhs))
-            for i in range(len(TUR_lhs)):
-                 fp.write("{},{},{},{},{},{}\n".format(epoch,gen_step,i,TUR_lhs[i],TUR_rhs[i],TUR_lhs[i]/TUR_rhs[i]))
-
     return TUR_samples
 
 isTURsample=True
@@ -245,7 +279,7 @@ def main():
     ws = [0.0, 0.5, 1.0]
     
     with open("TUR_log.csv","w") as fp:
-        fp.write("epoch,gen_step,i,TUR_lhs,TUR_rhs,LHS/RHS\n")
+        fp.write("epoch,gen_step,TUR_lhs,TUR_rhs,LHS/RHS\n")
 
     for epoch in range(num_epochs):
         train(unet, ddpm_model, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch)
