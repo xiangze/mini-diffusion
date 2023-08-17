@@ -81,7 +81,7 @@ class DDPM(nn.Module):
         return noise, x_t, cls, timestep / self.T, ctx_mask
 
     def A(self,x,t):
-        return self.betas[t]*x/2     
+        return -self.betas[t]*x/2       
          
     def sample(self, num_samples, size=(1,28,28), num_cls=10, guide_w = 0.0):
 
