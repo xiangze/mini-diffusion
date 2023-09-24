@@ -1,3 +1,4 @@
+import argparse
 import torch
 import torch.nn as nn
 import torchvision as tv
@@ -62,12 +63,18 @@ def calc_meanvar(_r,TUR_samplenum):
 
 def increment_1_2(_r,r):
     _r0 = _r[0]+torch.sum(r)
-    _r1 = _r[1]+torch.sum(r*r)
+    _r1 = _r[1]+torch.sum(r)*torch.sum(r)  #torch.sum(r*r)
     return [_r0,_r1]    
 
+debug=False
+isTURsample=True
+get_LHS=True
+get_RHS=True
+
 #ある学習ステップでサンプリングしたときのTURの左辺と右辺        
-def TUR_sample(epoch,ddpm_model,img_size,obs,
-               guide_w=0.0,n_generate_sample=500,TUR_samplenum=1000):
+def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
+               guide_w=0.0,n_generate_sample=500,TUR_samplenum=1000,init_every_sample=True,skp=1,
+               logfilename="TUR_log.csv"):
                 """
                 ddpm_model: 拡散モデル 
                 img_size:データ(画像)サイズ
@@ -89,89 +96,171 @@ def TUR_sample(epoch,ddpm_model,img_size,obs,
 
                 TUR_lhs=[]
                 TUR_rhs=[]
-                for t in range(n_generate_sample - 1, 0, -1):
-                    t_is = torch.tensor([t / n_generate_sample]).cuda()
-                    t_is=t_is.repeat(num_samples, 1, 1, 1)
-                    t_is=t_is.repeat(2, 1, 1, 1)
-                    
-                    x= torch.randn(img_size).cuda().repeat(2, 1, 1, 1)
-                    xo= torch.randn(img_size).cuda().repeat(2, 1, 1, 1)
-                    beta=ddpm_model.sqrt_beta_t[t]
-                    #compute LHS of TUR: entoropy production= j^T B^{-1} j/P = Ai^2P+2D(nabra_i Ai)P-(nabla_i^2 logP)P
-                    _lhs=0
-                    for i in range(TUR_samplenum):
-                        z = torch.randn(num_samples,*img_size).cuda()
-                        #print("{},xo size {}".format(i,xo.size()))
- 
-                        eps = ddpm_model.model(xo, c_i, t_is, ctx_mask)
-                        eps1 = eps[:num_samples]
-                        eps2 = eps[num_samples:]
-                        eps = (1 + guide_w)*eps1 - guide_w*eps2                        
-                        score=eps
-                        x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,eps)
-                        Ai=ddpm_model.A(x,t)
-                        #with torch.cuda.amp.autocast_mode.autocast():
-                            #score = unet(x.half(), c_i, timestep.half(), ctx_mask.half())
-                            #score=ddpm_model.model(xo,c_i,t_is,ctx_mask)
-                        #    score.backward()
-                        v=torch.flatten(Ai-beta*score)
-                        v2=torch.dot(v,v)
-                        _lhs+= v2/(2*beta)
-                        xo=x.repeat(2, 1, 1, 1)
-                    TUR_lhs.append(_lhs.detach().cpu().numpy()/TUR_samplenum)
+
+                x= torch.randn(img_size).cuda().repeat(2, 1, 1, 1)
+                xo= torch.randn(img_size).cuda()
+
+                #generating step
+                for t in range(n_generate_sample - 1, 0, -skp):
+                    xpath=[]
+
+                    if(get_LHS):
+                        t_is = torch.tensor([t / n_generate_sample]).cuda()
+                        t_is=t_is.repeat(num_samples, 1, 1, 1)
+                        t_is=t_is.repeat(2, 1, 1, 1)
+                        if(init_every_sample):                    
+                            x= torch.randn(img_size).cuda().repeat(2, 1, 1, 1)
+                            xo= torch.randn(img_size).cuda()
+                        D=ddpm_model.betas[t]/2
+                        #compute LHS of TUR: entoropy production= j^T B^{-1} j/P = Ai^2P+2D(nabra_i Ai)P-(nabla_i^2 logP)P
+                        _lhs=0
+                        _lhs2=0
+                        _lhsh=0                                                
+                        _scores=0
+                        _Ai=0                        
+                        for i in range(TUR_samplenum):
+                            z = torch.randn(num_samples,*img_size).cuda()
+    
+                            eps = ddpm_model.model(xo.repeat(2, 1, 1, 1), c_i, t_is, ctx_mask)
+                            eps1 = eps[:num_samples]
+                            eps2 = eps[num_samples:]
+                            eps = (1 + guide_w)*eps1 - guide_w*eps2                        
+                            score=eps
+                            x= ddpm_model.sample1(xo.repeat(2, 1, 1, 1),t,z,c_i,ctx_mask,eps)
+                            Ai=ddpm_model.A(x,t)
+                            
+                            v=torch.flatten(Ai-D*score)
+                            v2=torch.dot(v,v)
+                            _lhs+= v2/D
+
+                            v1=torch.flatten(Ai-2*D*score)
+                            v12=torch.dot(v1,v1)
+                            _lhs2+= v12/D
+
+                            vh=torch.flatten(Ai-D*score/2)
+                            vh2=torch.dot(vh,vh)
+                            _lhsh+= vh2/D
+
+                            _scores+=torch.sum(score)
+                            _Ai+=torch.sum(Ai)
+                            xo=x
+                            if(debug and t<=40):
+                                xpath.append(torch.flatten(x).detach().cpu().numpy())
+
+                        TUR_lhs.append([_lhs.detach().cpu().numpy()/TUR_samplenum,
+                                        _lhs2.detach().cpu().numpy()/TUR_samplenum,
+                                        _lhsh.detach().cpu().numpy()/TUR_samplenum,
+                                        _scores.detach().cpu().numpy()/TUR_samplenum,
+                                        _Ai.detach().cpu().numpy()/TUR_samplenum,
+                                        D.detach().cpu().numpy()/TUR_samplenum
+                                        ])
+                    if(debug and t<=40):
+                        for x in xpath:
+                            with open("lastxpath_epoch{}t{}.csv".format(epoch,t),"a") as fp:
+                                np.savetxt(fp,x)
 
                     #compute RHS of TUR: <R>^2/Var<R> of variable R=obs cdot dx
-                    x= torch.randn(img_size).cuda() 
-                    xo= torch.randn(img_size).cuda() 
-                    _r=[0,0]
-                    _rd=[0,0]
-                    _rx=[0,0]
-                    _r0=[0,0]
-                    for i in range(TUR_samplenum):
-                        z = torch.randn(num_samples,*img_size).cuda()                        
-                        x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,eps)
-                        #stratnovich obs
-                        rd=obs((x+xo)/2)*(x-xo)
-                        r=obs((x+xo)/2)
-                        rx=obs(x)
-                        r0=x[0,0,0,0]
+                    if(get_RHS):
+                        if(init_every_sample):                    
+                            x= torch.randn(img_size).cuda() 
+                            xo= torch.randn(img_size).cuda() 
+                        _r=[0,0]
+                        _rd=[0,0]
+                        _rx=[0,0]
+                        _r0=[0,0]
+                        _rv=[0,0]
+                        _rdi=[0,0]
+                        rds=[]
 
-                        _r[0] += torch.sum(r)
-                        _r[1] += torch.sum(r*r)
-                        _rd[0] += torch.sum(rd)
-                        _rd[1] += torch.sum(rd*rd)
-                        _rx[0] += torch.sum(rx)
-                        _rx[1] += torch.sum(rx*rx)
-                        _r0[0] += torch.sum(r0)
-                        _r0[1] += torch.sum(r0*r0)
+                        for i in range(TUR_samplenum):
+                            z = torch.randn(num_samples,*img_size).cuda()                        
+                            x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,eps)
+                            #stratnovich obs
+                            rd=obs((x+xo)/2)*(x-xo)
+                            r=obs((x+xo)/2)
+                            rx=obs(x)
+                            r0=x[0,0,0,0]
+                            rv=torch.var(x)
+                            rdi=obs((x+xo)/2)
 
-                        xo  =  x
+                            _r=increment_1_2(_r,r)
+                            _rd=increment_1_2(_rd,rd)
+                            if(debug):
+                                rds.append([torch.sum(rd).detach().cpu().numpy(),(torch.sum(rd)*torch.sum(rd)).detach().cpu().numpy()])
+                            _rx=increment_1_2(_rx,rx)                                                
+                            _r0=increment_1_2(_r0,r0)
+                            _rv=increment_1_2(_rv,rv)
+                            _rdi=increment_1_2(_rdi,rdi)
+                            
+                            xo  =  x
 
-                    #mean,var,rhs=calc_meanvar(_r,TUR_samplenum)
-                    #mean_d,var_d,rhs_d=calc_meanvar(_rd,TUR_samplenum)
-                    #mean_x,var_x,rhs_x=calc_meanvar(_rd,TUR_samplenum)
-                    rhs=calc_meanvar(_r,TUR_samplenum)
-                    rhs_d=calc_meanvar(_rd,TUR_samplenum)
-                    rhs_x=calc_meanvar(_rx,TUR_samplenum)
-                    rhs_0=calc_meanvar(_r0,TUR_samplenum)
-                    TUR_rhs.append([rhs,rhs_d,rhs_x,rhs_0])
-                    
+                        #mean,var,rhs
+                        rhs=calc_meanvar(_r,TUR_samplenum)
+                        rhs_d=calc_meanvar(_rd,TUR_samplenum)
+                        rhs_x=calc_meanvar(_rx,TUR_samplenum)
+                        rhs_0=calc_meanvar(_r0,TUR_samplenum)
+                        rhs_v=calc_meanvar(_rv,TUR_samplenum)
+                        rhs_rdi=calc_meanvar(_rdi,TUR_samplenum)
+                        TUR_rhs.append([rhs,rhs_d,rhs_x,rhs_0,rhs_v,rhs_rdi])
+                        
+                        # var<
+                        for r in :
+                        assert(rhs[1]>=0)
+
+                        if(debug and rhs_d[1]<0):
+                            with open("rd_trace.csv","a") as fp:
+                                fp.write("#{},{}\n".format(epoch,t))
+                                mean=0
+                                v=0
+                                for i in range(len(rds)):
+                                    fp.write("{},{}\n".format(rds[i][0],rds[i][1]))
+                                    mean+=rds[i][0]
+                                    v+=rds[i][1]
+                                mean=mean/len(rds)
+                                var=v/len(rds)-mean*mean
+                                fp.write("#mean,var(pytorch){},{}\n".format(rhs_d[0],rhs_d[1]))
+                                fp.write("#mean,var(numpy){},{}\n".format(mean,var))
+                            exit()
+
                 #[ [TUR_lhs[i],TUR_lhs[i][0][0], ]for i in range(n_generate_sample)]
-                with open("TUR_log.csv","a") as fp:
-                    for i in range(n_generate_sample-1):
-                        fp.write("{},{},{},".format(epoch,i,TUR_lhs[i]))
-                        for r in TUR_rhs[i]:
-                            for j in r:
-                                fp.write("{},".format(j))
-                            fp.write("{},".format(TUR_lhs[i]/r[2]))
+
+                if(epoch==0):
+                    with open(logfilename,"w") as fp:
+                        fp.write("epoch,gen_step,")
+                        fp.write("TUR_lhs,")
+                        fp.write("TUR_lhsx2,TUR_lhs_h,score,Ai,D,")
+                        for r in TUR_rhs[0]:
+                            fp.write("mean,var,rhs,LHS/RHS,")
                         fp.write("\n")
+
+
+                with open(logfilename,"a") as fp:
+                    for i in range(n_generate_sample//skp):
+                        if(get_LHS):
+                                fp.write("{},{},".format(epoch,i))
+                                for l in TUR_lhs[i]:
+                                    fp.write("{},".format(l))
+
+                        if(get_RHS):
+                            for r in TUR_rhs[i]:
+                                #mean,var,rhs,lhs/rhs
+                                for j in r:
+                                    fp.write("{},".format(j))
+                                fp.write("{},".format(TUR_lhs[i][0]/r[2]))
+                        fp.write("\n")
+
+                        
+
                 return [TUR_lhs,TUR_rhs]
+
 
 """
 train :学習の1 step(epoch)
 
 """
-def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch):
+def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch,
+                    n_generate_sample=500,TUR_samplenum=1000,
+                    logfilename="TUR_sample.csv", init_every_sample=True,skip=1):
     img_size=(1,28,28)
     obs=lambda x:torch.mean(x)
     #obs2=lambda x:torch.torch.var(x)
@@ -225,7 +314,10 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
 
             #ある学習ステップでサンプリングしたときのTURの左辺と右辺
             if(isTURsample):
-                TUR_samples=TUR_sample(epoch,ddpm_model,img_size,obs)
+                TUR_samples=TUR_sample(epoch,ddpm_model,img_size,obs,
+                                       n_generate_sample=n_generate_sample,TUR_samplenum=TUR_samplenum,
+                                       init_every_sample=init_every_sample,
+                                       logfilename=logfilename,skp=skip)
 
       fig, ax = plt.subplots(nrows = n_sample // num_cls, ncols = num_cls, sharex = True, sharey = True, figsize = (10, 4))
 
@@ -256,17 +348,27 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
 
     return TUR_samples
 
-isTURsample=True
 
-def main():
-
+if __name__ == '__main__':
+#    wandb.init(project = 'MinDiffusion')
     num_cls = 10
-    num_epochs = 20
+
+    parser = argparse.ArgumentParser(description='コマンドライン引数の例')
+    parser.add_argument('-n', '--num_epochs')  
+
+    num_epochs = 3
     save_dir = 'result'
     unet = UNet(1, 128, num_cls).cuda()
     ddpm_model = DDPM(unet, (1e-4, 0.02)).cuda()
 
-
+    skip=2
+    init_every_sample=False
+    TUR_samplenum=1000
+    if (init_every_sample):
+        logfilename="TUR_log_betas_skip{}sample{}epoch{}.csv".format(skip,TUR_samplenum,num_epochs)
+    else:
+        logfilename="TUR_log_betas_skip{}sample{}epoch{}_tradition.csv".format(skip,TUR_samplenum,num_epochs)
+                
     tr = T.Compose([T.ToTensor()])
     dataset = tv.datasets.MNIST('data', True, transform = tr, download = True)
     loader = DataLoader(dataset, batch_size = 64, shuffle = True, num_workers = 0)
@@ -278,14 +380,11 @@ def main():
     
     ws = [0.0, 0.5, 1.0]
     
-    with open("TUR_log.csv","w") as fp:
-        fp.write("epoch,gen_step,TUR_lhs,TUR_rhs,LHS/RHS\n")
 
     for epoch in range(num_epochs):
-        train(unet, ddpm_model, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch)
+        train(unet, ddpm_model, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch,
+              n_generate_sample=500,TUR_samplenum=TUR_samplenum,
+              logfilename=logfilename, init_every_sample=init_every_sample,
+              skip=skip)
 
 
-if __name__ == '__main__':
-
-#    wandb.init(project = 'MinDiffusion')
-    main()
