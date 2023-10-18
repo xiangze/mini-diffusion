@@ -164,63 +164,58 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                         if(init_every_sample):                    
                             x= torch.randn(img_size).cuda() 
                             xo= torch.randn(img_size).cuda() 
-                        _r=[0,0]
                         _rd=[0,0]
-                        _rx=[0,0]
-                        _r0=[0,0]
-                        _rv=[0,0]
-                        _rdi=[0,0]
+                        _rF=[0,0]                        
+                        _rF2=[0,0]                        
+
                         rds=[]
 
                         for i in range(TUR_samplenum):
                             z = torch.randn(num_samples,*img_size).cuda()                        
                             x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,eps)
+                            xe=(x+xo)/2
                             #stratnovich obs
-                            rd=obs((x+xo)/2)*(x-xo)
-                            r=obs((x+xo)/2)
-                            rx=obs(x)
-                            r0=x[0,0,0,0]
-                            rv=torch.var(x)
-                            rdi=obs((x+xo)/2)
+                            rd=torch.mean(xe)*(x-xo)
 
-                            _r=increment_1_2(_r,r)
+                            score=ddpm_model.model(xe.repeat(2, 1, 1, 1), c_i, t_is, ctx_mask)[0]
+                            Ai=ddpm_model.A(xe,t)
+                            F=torch.flatten(Ai/D-score)
+                            rF=torch.dot(F,torch.flatten(x-xo))
+                            rF2=torch.sum(F)*(x-xo)
+
                             _rd=increment_1_2(_rd,rd)
-                            if(debug):
-                                rds.append([torch.sum(rd).detach().cpu().numpy(),(torch.sum(rd)*torch.sum(rd)).detach().cpu().numpy()])
-                            _rx=increment_1_2(_rx,rx)                                                
-                            _r0=increment_1_2(_r0,r0)
-                            _rv=increment_1_2(_rv,rv)
-                            _rdi=increment_1_2(_rdi,rdi)
+                            _rF=increment_1_2(_rF,rF)
+                            _rF2=increment_1_2(_rF2,rF2)                            
+#                            if(debug):
+#                                rds.append([torch.sum(rd).detach().cpu().numpy(),(torch.sum(rd)*torch.sum(rd)).detach().cpu().numpy()])
                             
                             xo  =  x
 
                         #mean,var,rhs
-                        rhs=calc_meanvar(_r,TUR_samplenum)
-                        rhs_d=calc_meanvar(_rd,TUR_samplenum)
-                        rhs_x=calc_meanvar(_rx,TUR_samplenum)
-                        rhs_0=calc_meanvar(_r0,TUR_samplenum)
-                        rhs_v=calc_meanvar(_rv,TUR_samplenum)
-                        rhs_rdi=calc_meanvar(_rdi,TUR_samplenum)
-                        TUR_rhs.append([rhs,rhs_d,rhs_x,rhs_0,rhs_v,rhs_rdi])
+                        rhss=[
+                        calc_meanvar(_rd,TUR_samplenum),
+                        calc_meanvar(_rF,TUR_samplenum),
+                        calc_meanvar(_rF2,TUR_samplenum)
+                        ]
+                        TUR_rhs.append(rhss)
                         
                         # var<
-                        for r in :
-                        assert(rhs[1]>=0)
-
-                        if(debug and rhs_d[1]<0):
-                            with open("rd_trace.csv","a") as fp:
-                                fp.write("#{},{}\n".format(epoch,t))
-                                mean=0
-                                v=0
-                                for i in range(len(rds)):
-                                    fp.write("{},{}\n".format(rds[i][0],rds[i][1]))
-                                    mean+=rds[i][0]
-                                    v+=rds[i][1]
-                                mean=mean/len(rds)
-                                var=v/len(rds)-mean*mean
-                                fp.write("#mean,var(pytorch){},{}\n".format(rhs_d[0],rhs_d[1]))
-                                fp.write("#mean,var(numpy){},{}\n".format(mean,var))
-                            exit()
+                        for i,r in enumerate(rhss):
+                            #assert(r[1]>=0)
+                            if(debug and r[1]<0):
+                                with open("rd_trace{}.csv".format(i),"a") as fp:
+                                    fp.write("#{},{}\n".format(epoch,t))
+                                    mean=0
+                                    v=0
+                                    for i in range(len(rds)):
+                                        fp.write("{},{}\n".format(rds[i][0],rds[i][1]))
+                                        mean+=rds[i][0]
+                                        v+=rds[i][1]
+                                    mean=mean/len(rds)
+                                    var=v/len(rds)-mean*mean
+                                    fp.write("#mean,var(pytorch){},{}\n".format(rhs_d[0],rhs_d[1]))
+                                    fp.write("#mean,var(numpy){},{}\n".format(mean,var))
+                                exit()
 
                 #[ [TUR_lhs[i],TUR_lhs[i][0][0], ]for i in range(n_generate_sample)]
 
@@ -362,7 +357,7 @@ if __name__ == '__main__':
     ddpm_model = DDPM(unet, (1e-4, 0.02)).cuda()
 
     skip=2
-    init_every_sample=False
+    init_every_sample=True
     TUR_samplenum=1000
     if (init_every_sample):
         logfilename="TUR_log_betas_skip{}sample{}epoch{}.csv".format(skip,TUR_samplenum,num_epochs)
