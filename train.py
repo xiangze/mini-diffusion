@@ -15,6 +15,10 @@ from tqdm import tqdm
 from model.Unet import UNet
 from ddpm import DDPM
 
+tdot=torch.dot
+tsum=torch.sum
+tmean=torch.mean
+tflatten=torch.flatten
 
 class AverageMeter:
     def __init__(self, name=None):
@@ -62,9 +66,29 @@ def calc_meanvar(_r,TUR_samplenum):
     return mean,var,rhs
 
 def increment_1_2(_r,r):
-    _r0 = _r[0]+torch.sum(r)
-    _r1 = _r[1]+torch.sum(r)*torch.sum(r)  #torch.sum(r*r)
+    #s=torch.sum(r)
+    _r0 = _r[0]+r 
+    _r1 = _r[1]+r*r
     return [_r0,_r1]    
+
+class RHS:
+    def __init__(self) -> None:
+        self.r0 =0
+        self.r1 =0
+
+    def inclement(self,r):
+        self.r0 = self.r0+r 
+        self.r1 = self.r1+r*r
+
+    def meanvar(self,TUR_samplenum):
+        _mean=torch.sum(self.r0)/TUR_samplenum
+        mean2=_mean*_mean
+        _var = (self.r1/TUR_samplenum -mean2) *TUR_samplenum/(TUR_samplenum-1)
+
+        mean=_mean.detach().cpu().numpy()
+        var=_var.detach().cpu().numpy()
+        rhs=2*mean2.detach().cpu().numpy()/var
+        return mean,var,rhs
 
 debug=False
 isTURsample=True
@@ -164,43 +188,50 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                         if(init_every_sample):                    
                             x= torch.randn(img_size).cuda() 
                             xo= torch.randn(img_size).cuda() 
-                        _rd=[0,0]
-                        _rF=[0,0]                        
-                        _rF2=[0,0]                        
-
+                        
+                        RHSS=[RHS() for r in range(11)]
                         rds=[]
 
                         for i in range(TUR_samplenum):
                             z = torch.randn(num_samples,*img_size).cuda()                        
                             x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,eps)
                             xe=(x+xo)/2
-                            #stratnovich obs
-                            rd=torch.mean(xe)*(x-xo)
+                            xd=x-xo
+                            xe_f=tflatten(xe)
+                            xd_f=tflatten(xd)
 
+                            #stratnovich obs
                             score=ddpm_model.model(xe.repeat(2, 1, 1, 1), c_i, t_is, ctx_mask)[0]
                             Ai=ddpm_model.A(xe,t)
-                            F=torch.flatten(Ai/D-score)
-                            rF=torch.dot(F,torch.flatten(x-xo))
-                            rF2=torch.sum(F)*(x-xo)
+                            F=tflatten(Ai/D-score)
 
-                            _rd=increment_1_2(_rd,rd)
-                            _rF=increment_1_2(_rF,rF)
-                            _rF2=increment_1_2(_rF2,rF2)                            
+                            vs=[
+                                tsum(tmean(xe)*xd),
+                                tsum(tsum(F)*xd),
+                                tdot(xe_f,xd_f),
+                                tdot(xe_f*xe_f,xd_f),
+                                tdot(xe_f*xe_f*xe_f,xd_f),
+                                tdot(xe_f,xd_f),
+                                tdot(xe_f*xe_f,xd_f),
+                                tdot(xe_f*xe_f*xe_f,xd_f),
+                                tdot(F,xd_f),
+                                tdot(F*xe_f,xd_f),
+                                tdot(F*xe_f*xe_f,xd_f)
+                            ]
+
+                            for i,r in enumerate(vs):
+                                RHSS[i].inclement(r)
+
 #                            if(debug):
 #                                rds.append([torch.sum(rd).detach().cpu().numpy(),(torch.sum(rd)*torch.sum(rd)).detach().cpu().numpy()])
-                            
                             xo  =  x
 
                         #mean,var,rhs
-                        rhss=[
-                        calc_meanvar(_rd,TUR_samplenum),
-                        calc_meanvar(_rF,TUR_samplenum),
-                        calc_meanvar(_rF2,TUR_samplenum)
-                        ]
-                        TUR_rhs.append(rhss)
+                        rhs_v=[r.meanvar(TUR_samplenum) for r in RHSS]
+                        TUR_rhs.append(rhs_v)
                         
                         # var<
-                        for i,r in enumerate(rhss):
+                        for i,r in enumerate(rhs_v):
                             #assert(r[1]>=0)
                             if(debug and r[1]<0):
                                 with open("rd_trace{}.csv".format(i),"a") as fp:
