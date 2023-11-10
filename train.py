@@ -196,28 +196,44 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                             z = torch.randn(num_samples,*img_size).cuda()                        
                             x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,eps)
                             xe=(x+xo)/2
-                            xd=x-xo
-                            xe_f=tflatten(xe)
-                            xd_f=tflatten(xd)
-
+                            dx=x-xo
                             #stratnovich obs
                             score=ddpm_model.model(xe.repeat(2, 1, 1, 1), c_i, t_is, ctx_mask)[0]
                             Ai=ddpm_model.A(xe,t)
                             F=tflatten(Ai/D-score)
 
+                            xe=tflatten(xe)
+                            dx=tflatten(dx)
+                            xe2=xe*xe
+                            xe3=xe2*xe
+                            dx2=dx*dx
+                            dx3=dx2*dx
+
                             vs=[
-                                tsum(tmean(xe)*xd),
-                                tsum(tsum(F)*xd),
-                                tdot(xe_f,xd_f),
-                                tdot(xe_f*xe_f,xd_f),
-                                tdot(xe_f*xe_f*xe_f,xd_f),
-                                tdot(xe_f,xd_f),
-                                tdot(xe_f*xe_f,xd_f),
-                                tdot(xe_f*xe_f*xe_f,xd_f),
-                                tdot(F,xd_f),
-                                tdot(F*xe_f,xd_f),
-                                tdot(F*xe_f*xe_f,xd_f)
+                                tdot(xe,dx2),
+                                tdot(xe2,dx3),
+                                tdot(xe3,dx2),
+                                tdot(xe2,dx2),
+                                tdot(xe2,dx3),
+                                tdot(F,dx2),
+                                tdot(F,dx3),
+                                tdot(F*xe,dx2),
+                                tdot(F*xe,dx3),
+                                tdot(dx,dx),
+                                tdot(xe*dx,dx)
                             ]
+#                                tsum(tmean(xe)*xd),
+#                                tsum(tsum(F)*xd),
+#                                tdot(xe_f,xd_f),
+#                                tdot(xe_f*xe_f,xd_f),
+#                                tdot(xe_f*xe_f*xe_f,xd_f),
+#                                tdot(xe_f,xd_f),
+#                                tdot(xe_f*xe_f,xd_f),
+#                                tdot(xe_f*xe_f*xe_f,xd_f),
+#                                tdot(F,xd_f),
+#                                tdot(F*xe_f,xd_f),
+#                                tdot(F*xe_f*xe_f,xd_f)
+#                            ]
 
                             for i,r in enumerate(vs):
                                 RHSS[i].inclement(r)
