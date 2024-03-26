@@ -73,18 +73,17 @@ def increment_1_2(_r,r):
 
 class RHS:
     def __init__(self) -> None:
-        self.r0 =0
-        self.r1 =0
+        self.ave =0
+        self.var =0
 
-    def inclement(self,r):
-        self.r0 = self.r0+r 
-        self.r1 = self.r1+r*r
+    def inclement(self,f,F,D):
+        self.ave = self.f0+tdot(f,F)
+        self.var = self.f1+tdot(f,f)*D
 
     def meanvar(self,TUR_samplenum):
-        _mean=torch.sum(self.r0)/TUR_samplenum
+        _mean=torch.sum(self.ave)/TUR_samplenum
+        _var = self.var/TUR_samplenum
         mean2=_mean*_mean
-        _var = (self.r1/TUR_samplenum -mean2) *TUR_samplenum/(TUR_samplenum-1)
-
         mean=_mean.detach().cpu().numpy()
         var=_var.detach().cpu().numpy()
         rhs=2*mean2.detach().cpu().numpy()/var
@@ -144,13 +143,10 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                         _Ai=0                        
                         for i in range(TUR_samplenum):
                             z = torch.randn(num_samples,*img_size).cuda()
-    
-                            eps = ddpm_model.model(xo.repeat(2, 1, 1, 1), c_i, t_is, ctx_mask)
-                            eps1 = eps[:num_samples]
-                            eps2 = eps[num_samples:]
-                            eps = (1 + guide_w)*eps1 - guide_w*eps2                        
-                            score=eps
-                            x= ddpm_model.sample1(xo.repeat(2, 1, 1, 1),t,z,c_i,ctx_mask,eps)
+                            xo=xo.repeat(2, 1, 1, 1)
+                            eps = ddpm_model.model(xo, c_i, t_is, ctx_mask)
+                            score=(1 + guide_w)*eps[:num_samples] - guide_w*eps[num_samples:]
+                            x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,score) #diffusion step
                             Ai=ddpm_model.A(x,t)
                             
                             v=torch.flatten(Ai-D*score)
@@ -161,10 +157,6 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                             v12=torch.dot(v1,v1)
                             _lhs2+= v12/D
 
-                            vh=torch.flatten(Ai-D*score/2)
-                            vh2=torch.dot(vh,vh)
-                            _lhsh+= vh2/D
-
                             _scores+=torch.sum(score)
                             _Ai+=torch.sum(Ai)
                             xo=x
@@ -173,7 +165,6 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
 
                         TUR_lhs.append([_lhs.detach().cpu().numpy()/TUR_samplenum,
                                         _lhs2.detach().cpu().numpy()/TUR_samplenum,
-                                        _lhsh.detach().cpu().numpy()/TUR_samplenum,
                                         _scores.detach().cpu().numpy()/TUR_samplenum,
                                         _Ai.detach().cpu().numpy()/TUR_samplenum,
                                         D.detach().cpu().numpy()/TUR_samplenum
@@ -184,6 +175,7 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                                 np.savetxt(fp,x)
 
                     #compute RHS of TUR: <R>^2/Var<R> of variable R=obs cdot dx
+                    #
                     if(get_RHS):
                         if(init_every_sample):                    
                             x= torch.randn(img_size).cuda() 
@@ -200,7 +192,10 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                             #stratnovich obs
                             score=ddpm_model.model(xe.repeat(2, 1, 1, 1), c_i, t_is, ctx_mask)[0]
                             Ai=ddpm_model.A(xe,t)
-                            F=tflatten(Ai/D-score)
+                            #等式条件用でもある
+                            #avef=<f(AP-D∇P)>=∫dx Pf*(A-Dscore) =: <f*F>
+                            #(=∫dx Pf(A-D∇P/P)=∫dx PfA-fD∇P=∫dx PfA+DP∇f=<fA+D∇f>)
+                            F=tflatten(Ai-D*score)
 
                             xe=tflatten(xe)
                             dx=tflatten(dx)
@@ -210,33 +205,21 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                             dx3=dx2*dx
 
                             vs=[
-                                tdot(xe,dx2),
-                                tdot(xe2,dx3),
-                                tdot(xe3,dx2),
-                                tdot(xe2,dx2),
-                                tdot(xe2,dx3),
-                                tdot(F,dx2),
-                                tdot(F,dx3),
-                                tdot(F*xe,dx2),
-                                tdot(F*xe,dx3),
-                                tdot(dx,dx),
-                                tdot(xe*dx,dx)
+                                xe,
+                                xe2,
+                                xe3,
+                                xe2,
+                                xe2,
+                                F,
+                                dx,
+                                dx2,
+                                dx3,
+                                dx*F,
+                                xe*dx
                             ]
-#                                tsum(tmean(xe)*xd),
-#                                tsum(tsum(F)*xd),
-#                                tdot(xe_f,xd_f),
-#                                tdot(xe_f*xe_f,xd_f),
-#                                tdot(xe_f*xe_f*xe_f,xd_f),
-#                                tdot(xe_f,xd_f),
-#                                tdot(xe_f*xe_f,xd_f),
-#                                tdot(xe_f*xe_f*xe_f,xd_f),
-#                                tdot(F,xd_f),
-#                                tdot(F*xe_f,xd_f),
-#                                tdot(F*xe_f*xe_f,xd_f)
-#                            ]
 
                             for i,r in enumerate(vs):
-                                RHSS[i].inclement(r)
+                                RHSS[i].inclement(r,F,D)
 
 #                            if(debug):
 #                                rds.append([torch.sum(rd).detach().cpu().numpy(),(torch.sum(rd)*torch.sum(rd)).detach().cpu().numpy()])
@@ -246,7 +229,8 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                         rhs_v=[r.meanvar(TUR_samplenum) for r in RHSS]
                         TUR_rhs.append(rhs_v)
                         
-                        # var<
+                        # var<fDf>?
+                        
                         for i,r in enumerate(rhs_v):
                             #assert(r[1]>=0)
                             if(debug and r[1]<0):
@@ -398,7 +382,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='コマンドライン引数の例')
     parser.add_argument('-n', '--num_epochs')  
 
-    num_epochs = 3
+    num_epochs = 10
     save_dir = 'result'
     unet = UNet(1, 128, num_cls).cuda()
     ddpm_model = DDPM(unet, (1e-4, 0.02)).cuda()
@@ -407,9 +391,9 @@ if __name__ == '__main__':
     init_every_sample=True
     TUR_samplenum=1000
     if (init_every_sample):
-        logfilename="TUR_log_betas_skip{}sample{}epoch{}.csv".format(skip,TUR_samplenum,num_epochs)
+        logfilename="TUR_debug_ave_log_skip{}sample{}epoch{}.csv".format(skip,TUR_samplenum,num_epochs)
     else:
-        logfilename="TUR_log_betas_skip{}sample{}epoch{}_tradition.csv".format(skip,TUR_samplenum,num_epochs)
+        logfilename="TUR_debug_ave_log_skip{}sample{}epoch{}_tradition.csv".format(skip,TUR_samplenum,num_epochs)
                 
     tr = T.Compose([T.ToTensor()])
     dataset = tv.datasets.MNIST('data', True, transform = tr, download = True)
