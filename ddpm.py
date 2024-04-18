@@ -131,13 +131,8 @@ class DDPM(nn.Module):
             ctx_mask: which samples to block context on
             eps: from Unet
             '''
-            t_is = torch.tensor([t / self.T]).cuda()
-            t_is = t_is.repeat(num_samples, 1, 1, 1)
-
-            x = x.repeat(2, 1, 1, 1)   
-            t_is = t_is.repeat(2, 1, 1, 1)
+            #x = x.repeat(2, 1, 1, 1)   
             z = torch.randn(num_samples, *size).cuda() 
-
             x = x[:num_samples]
             return  self.sqrt_alpha_t_inv[t] * (x - eps*self.alpha_t_div_sqrt_abar[t]) + self.sqrt_beta_t[t] * z
   
