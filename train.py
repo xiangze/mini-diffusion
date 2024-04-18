@@ -13,7 +13,7 @@ from tqdm import tqdm
 #import wandb
 
 from model.Unet import UNet
-from ddpm import DDPM
+from ddpm import DDPM,SMLD
 
 tdot=torch.dot
 tsum=torch.sum
@@ -90,7 +90,7 @@ class RHS:
         mean2=(mean*mean)
         mean2A=(meanA*meanA)
         mean2B=(meanB*meanB)
-        var = (f2 -mean2)*TUR_samplenum/(TUR_samplenum-1)
+        var = (f2 -mean2)*TUR_samplenum/(TUR_samplenum-1)/2
         rhs=2*mean2/var
         if(varD!=0):
             rhsA=2*mean2A/varD
@@ -141,7 +141,7 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                 #generating step
                 for t in range(n_generate_sample - 1, 0, -skp):
                     xpath=[]
-
+                    D=ddpm_model.betas[t]/2
                     if(get_LHS):
                         t_is = torch.tensor([t / n_generate_sample]).cuda()
                         t_is=t_is.repeat(num_samples, 1, 1, 1)
@@ -149,7 +149,6 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                         if(init_every_sample):                    
                             x= torch.randn(img_size).cuda().repeat(2, 1, 1, 1)
                             xo= torch.randn(img_size).cuda()
-                        D=ddpm_model.betas[t]/2
                         #compute LHS of TUR: entoropy production= j^T B^{-1} j/P = Ai^2P+2D(nabra_i Ai)P-(nabla_i^2 logP)P
                         _lhs=0
                         _scores=0
@@ -158,17 +157,16 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                             z = torch.randn(num_samples,*img_size).cuda()
                             xo=xo.repeat(2, 1, 1, 1)
                             score = ddpm_model.model(xo, c_i, t_is, ctx_mask)[0]
-                            x= ddpm_model.sample1(xo,t,z,c_i,ctx_mask,score) #diffusion step xo=[2,1,28,28],x=[1,1,28,28]
-                            Ai=ddpm_model.A(xo,t)
-                            
+                            Ai=ddpm_model.A(xo,t,score)
                             v=torch.flatten(Ai-D*score)
                             v2=torch.dot(v,v)
                             _lhs+= v2/D
                             _scores+=torch.sum(score)
                             _Ai+=torch.sum(Ai)
-                            xo=x
+                            #next step
+                            xo=ddpm_model.sample1(xo,t,z,c_i,ctx_mask,score) #diffusion step xo=[2,1,28,28],x=[1,1,28,28]
                             if(debug and t<=40):
-                                xpath.append(torch.flatten(x).detach().cpu().numpy())
+                                xpath.append(torch.flatten(xo).detach().cpu().numpy())
 
                         TUR_lhs.append([_lhs.detach().cpu().numpy()/TUR_samplenum,
                                         v2.detach().cpu().numpy()/TUR_samplenum,
@@ -188,7 +186,7 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                             x= torch.randn(img_size).cuda() 
                             xo= torch.randn(img_size).cuda() 
                         
-                        RHSS=[RHS() for r in range(5)]
+                        RHSS=[RHS() for r in range(6)]
                         rds=[]
 
                         for i in range(TUR_samplenum):
@@ -203,10 +201,14 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                             #avef=<f(AP-D∇P)>=∫dx Pf*(A-Dscore) =: <f*F>
                             #=∫dx Pf(A-D∇P/P)=∫dx PfA-fD∇P=∫dx PfA+DP∇f=<fA+D∇f> )
                             #score=ddpm_model.model(xo, c_i, t_is, ctx_mask)[0]
-                            Ai=ddpm_model.A(xo,t)
+                            Ai=ddpm_model.A(xo,t,score)
                             F=tflatten(Ai-D*score)
                             A=tflatten(Ai)
                             #f
+                            score_e=ddpm_model.model(xe.repeat(2, 1, 1, 1), c_i, t_is, ctx_mask)[0]
+                            Ae=ddpm_model.A(xe,t,score_e)
+                            Fe=tflatten(Ae-D*score_e)
+
                             xe=tflatten(xe)
                             dx=tflatten(dx)
                             xe2=xe*xe
@@ -215,21 +217,20 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                             xf2=xf*xf
                             xf3=xf*xf2
 
-                            score_e=ddpm_model.model(xe.repeat(2,1,1,1), c_i, t_is, ctx_mask)[0]
-                            Ae=ddpm_model.A(xe,t)
-                            Fe=tflatten(Ae-D*score_e)
                             fs=[
                                 tflatten(torch.ones(x.shape).cuda()),
                                 xf,
-                                xf2,
-                                xf3,
+            -                   xf2,
+                                xe,
+                                xe2,
                                 F
                             ]
                             dfs=[
                                 tflatten(torch.zeros(x.shape).cuda()),
                                 tflatten(torch.ones(x.shape).cuda()),
                                 2*xf,
-                                3*xf2,
+                                tflatten(torch.ones(x.shape).cuda()),
+                                2*xe,
                                 F
                             ]
 
@@ -237,12 +238,16 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                                 torch.sum(dx),
                                 tdot(xe,dx),
                                 tdot(xe2,dx),
-                                tdot(xe3,dx),
+                                tdot(xe,dx),
+                                tdot(xe2,dx),
                                 tdot(Fe,dx),
                             ]
 
                             for i,f in enumerate(fs):
-                                RHSS[i].inclement(f,dfs[i],sc[i],F,A,D)
+                                if(i==3 or i==4):
+                                    RHSS[i].inclement(f,dfs[i],sc[i],Fe,tflatten(Ae),D)
+                                else:
+                                    RHSS[i].inclement(f,dfs[i],sc[i],F,A,D)
 
 #                            if(debug):
 #                                rds.append([torch.sum(rd).detach().cpu().numpy(),(torch.sum(rd)*torch.sum(rd)).detach().cpu().numpy()])
@@ -251,8 +256,6 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                         #mean,var,rhs
                         rhs_v=[r.meanvar(TUR_samplenum) for r in RHSS]
                         TUR_rhs.append(rhs_v)
-                        
-                        # var<fDf>?
                         
                         for i,r in enumerate(rhs_v):
                             #assert(r[1]>=0)
@@ -400,27 +403,47 @@ if __name__ == '__main__':
 #    wandb.init(project = 'MinDiffusion')
     num_cls = 10
 
-    parser = argparse.ArgumentParser(description='コマンドライン引数の例')
-    parser.add_argument('-n', '--num_epochs')  
+    parser = argparse.ArgumentParser(description='学習、生成段階におけるエントロピー生成率と変数のゆらぎを出力する')
+    parser.add_argument('-n', '--num_epochs',default=10,type=int)  
+    parser.add_argument('-s', '--sample_num',default=1000,type=int)      
+    parser.add_argument('-i', '--tradition',action="store_true")
+    parser.add_argument('-t', '--type',default="DDPM") #"SMLD"
+    parser.add_argument('-l', '--learningrate',default=1e-4,type=float)#lr = 1e-4  5e-6
+    parser.add_argument('-skip', '--skip',default=10,type=int)
+    parser.add_argument('-save_dir', '--save_dir',default="result")
+    parser.add_argument('-sche', '--scheduler_type',default="linear")
 
-    num_epochs = 4
-    save_dir = 'result'
+    args = parser.parse_args()
+#    print(args)
+    num_epochs = args.num_epochs
+    diftype=args.type
+    init_every_sample=not args.tradition
+    TUR_samplenum=args.sample_num
+    lr =args.learningrate
+    skip=args.skip
+    save_dir =args.save_dir
+    scheduler_type=args.scheduler_type
+
+    suffix=diftype
+
     unet = UNet(1, 128, num_cls).cuda()
-    ddpm_model = DDPM(unet, (1e-4, 0.02)).cuda()
-
-    skip=20
-    init_every_sample=True
-    TUR_samplenum=1000
-    if (init_every_sample):
-        logfilename="TUR_debug_ave_log_skip{}sample{}epoch{}.csv".format(skip,TUR_samplenum,num_epochs)
+    
+    if(diftype=="SMLD"):
+        ddpm_model = SMLD(unet, (1e-4, 0.02),scheduler_type=scheduler_type).cuda()        
     else:
-        logfilename="TUR_debug_ave_log_skip{}sample{}epoch{}_tradition.csv".format(skip,TUR_samplenum,num_epochs)
+        ddpm_model = DDPM(unet, (1e-4, 0.02),scheduler_type=scheduler_type).cuda()
+
+
+    if (init_every_sample):
+        logfilename="TUR_log_skip{}sample{}epoch{}_{}_lr{}_{}.csv".format(skip,TUR_samplenum,num_epochs,scheduler_type,lr,suffix)
+    else:
+        logfilename="TUR_log_skip{}sample{}epoch{}_{}_tradition_lr{}_{}.csv".format(skip,TUR_samplenum,num_epochs,scheduler_type,lr,suffix)
                 
     tr = T.Compose([T.ToTensor()])
     dataset = tv.datasets.MNIST('data', True, transform = tr, download = True)
     loader = DataLoader(dataset, batch_size = 64, shuffle = True, num_workers = 0)
 
-    opt = torch.optim.Adam(list(ddpm_model.parameters()) + list(unet.parameters()), lr = 1e-4)
+    opt = torch.optim.Adam(list(ddpm_model.parameters()) + list(unet.parameters()), lr =lr)
     criterion = nn.MSELoss()
 
     scaler = torch.cuda.amp.grad_scaler.GradScaler()
