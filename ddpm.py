@@ -54,15 +54,38 @@ def ddpm_schedule(beta_start, beta_end, T, scheduler_type = 'cosine'):
     } 
 
 
-
-class DDPM(nn.Module):
-
-    def __init__(self, model, betas, T = 500, dropout_p = 0.1):
+class Diffuser(nn.Module):
+    def __init__(self, model,T = 500, dropout_p = 0.1):
         
         super().__init__() 
         self.model = model.cuda()
 
-        for k, v in ddpm_schedule(betas[0], betas[1], T).items():
+        self.T = T
+        self.dropout_p = dropout_p
+
+    
+    def forward(self, x, cls):
+
+        timestep = torch.randint(1, self.T, (x.shape[0], )).cuda()
+        noise = torch.randn_like(x)
+
+        x_t = (self.sqrt_abar_t[timestep, None, None, None] * x + self.sqrt_abar_t1[timestep, None, None, None] * noise)
+
+        ctx_mask = torch.bernoulli(torch.zeros_like(cls) + self.dropout_p).cuda()
+        
+        return noise, x_t, cls, timestep / self.T, ctx_mask
+
+    def sample(self, num_samples, size=(1,28,28), num_cls=10, guide_w = 0.0):
+        pass
+    
+class DDPM(nn.Module):
+
+    def __init__(self, model, betas, T = 500, dropout_p = 0.1, scheduler_type = 'cosine'):
+        
+        super().__init__() 
+        self.model = model.cuda()
+
+        for k, v in ddpm_schedule(betas[0], betas[1], T, scheduler_type).items():
             self.register_buffer(k, v)
 
         self.T = T
@@ -80,9 +103,12 @@ class DDPM(nn.Module):
         
         return noise, x_t, cls, timestep / self.T, ctx_mask
 
-    def A(self,x,t):
-        return -self.betas[t]*x/2       
-         
+    def A(self,x,t,eps,org=False):
+        if(org):
+            return -self.betas[t]*x/2       
+        else:
+            return (-x+self.sqrt_alpha_t_inv[t] * (x - eps*self.alpha_t_div_sqrt_abar[t]) )
+    
     def sample(self, num_samples, size=(1,28,28), num_cls=10, guide_w = 0.0):
 
         x_i = torch.randn(num_samples, *size).cuda() 
@@ -122,7 +148,7 @@ class DDPM(nn.Module):
         
         return x_i, np.array(x_is)
 
-    def sample1(self, x,t,z,c_i,ctx_mask, eps,size=(1,28,28), guide_w = 0.0, num_samples=1):
+    def sample1(self, x,t,z,c_i,ctx_mask, eps,size=(1,28,28), guide_w = 0.0, num_samples=1,dt=1):
             '''
             x: Image
             t: timestep
@@ -134,5 +160,65 @@ class DDPM(nn.Module):
             #x = x.repeat(2, 1, 1, 1)   
             z = torch.randn(num_samples, *size).cuda() 
             x = x[:num_samples]
-            return  self.sqrt_alpha_t_inv[t] * (x - eps*self.alpha_t_div_sqrt_abar[t]) + self.sqrt_beta_t[t] * z
+            return  x+ (-x+self.sqrt_alpha_t_inv[t] * (x - eps*self.alpha_t_div_sqrt_abar[t]) )*dt + self.sqrt_beta_t[t] * z*np.sqrt(dt)
   
+class SMLD(Diffuser):
+    def __init__(self, model, betas, T = 500, dropout_p = 0.1, scheduler_type = 'cosine'):
+        super().__init__(model,T, dropout_p) 
+        
+        for k, v in ddpm_schedule(betas[0], betas[1], T, scheduler_type).items():
+            self.register_buffer(k, v)
+
+    def A(self,x,t,eps):
+        return self.betas[t]*eps
+
+    
+    def sample1(self, x,t,z,c_i,ctx_mask, eps,size=(1,28,28), guide_w = 0.0, num_samples=1,dt=1):
+            '''
+            x: Image
+            t: timestep
+            z: Noise
+            c_i: Context label
+            ctx_mask: which samples to block context on
+            eps: from Unet
+            '''
+            #x = x.repeat(2, 1, 1, 1)   
+            z = torch.randn(num_samples, *size).cuda()
+            x = x[:num_samples]
+            return  x+ self.A(x,t,eps)*dt+self.sqrt_beta_t[t] * z*np.sqrt(dt)
+    
+    def sample(self, num_samples, size=(1,28,28), num_cls=10, guide_w = 0.0):
+
+        x_i = torch.randn(num_samples, *size).cuda() 
+        c_i = torch.arange(0, num_cls).cuda()
+        c_i = c_i.repeat(int(num_samples / c_i.shape[0]))
+
+        ctx_mask = torch.zeros_like(c_i).cuda()
+        c_i = c_i.repeat(2)
+        ctx_mask = ctx_mask.repeat(2)
+        ctx_mask[num_samples:] = 1.0
+
+        #To Store intermediate results and create GIFs.
+        x_is = []
+
+        # T, T-1,T-2 ...,1
+        for i in range(self.T - 1, 0, -1):
+            
+            t_is = torch.tensor([i / self.T]).cuda()
+            t_is = t_is.repeat(num_samples, 1, 1, 1)
+
+            x_i = x_i.repeat(2, 1, 1, 1)   
+            t_is = t_is.repeat(2, 1, 1, 1)
+
+            eps = self.model(x_i, c_i, t_is, ctx_mask)
+            eps1 = eps[:num_samples]
+            eps2 = eps[num_samples:]
+            eps = (1 + guide_w)*eps1 - guide_w*eps2
+            
+            x_i = self.sample1(x_i,i,None,c_i,ctx_mask, eps,size, guide_w, num_samples,dt=1)
+            #def sample1(self,x,t,eps,size=(1,28,28),num_samples=1,dt=1):
+            
+            if i % 25 == 0 or i == self.T - 1:
+                x_is.append(x_i.detach().cpu().numpy())
+            
+        return x_i, np.array(x_is)
