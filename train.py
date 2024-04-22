@@ -176,7 +176,7 @@ def TUR_sample(epoch:int,ddpm_model:DDPM,img_size,obs,
                                         ])
                     if(debug and t<=40):
                         for x in xpath:
-                            with open("lastxpath_epoch{}t{}.csv".format(epoch,t),"a") as fp:
+                            with open("lastxpath/lastxpath_epoch{}t{}.csv".format(epoch,t),"a") as fp:
                                 np.savetxt(fp,x)
 
                     #compute RHS of TUR: <R>^2/Var<R> of variable R=obs cdot dx
@@ -310,7 +310,7 @@ train :学習の1 step(epoch)
 """
 def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, save_dir, ws, epoch,
                     n_generate_sample=500,TUR_samplenum=1000,
-                    logfilename="TUR_sample.csv", init_every_sample=True,skip=1):
+                    logfilename="log/TUR_sample.csv", init_every_sample=True,skip=1):
     img_size=(1,28,28)
     obs=lambda x:torch.mean(x)
     #obs2=lambda x:torch.torch.var(x)
@@ -435,9 +435,9 @@ if __name__ == '__main__':
 
 
     if (init_every_sample):
-        logfilename="TUR_log_skip{}sample{}epoch{}_{}_lr{}_{}.csv".format(skip,TUR_samplenum,num_epochs,scheduler_type,lr,suffix)
+        logfilename="log/TUR_log_skip{}sample{}epoch{}_{}_lr{}_{}.csv".format(skip,TUR_samplenum,num_epochs,scheduler_type,lr,suffix)
     else:
-        logfilename="TUR_log_skip{}sample{}epoch{}_{}_tradition_lr{}_{}.csv".format(skip,TUR_samplenum,num_epochs,scheduler_type,lr,suffix)
+        logfilename="log/TUR_log_skip{}sample{}epoch{}_{}_tradition_lr{}_{}.csv".format(skip,TUR_samplenum,num_epochs,scheduler_type,lr,suffix)
                 
     tr = T.Compose([T.ToTensor()])
     dataset = tv.datasets.MNIST('data', True, transform = tr, download = True)
