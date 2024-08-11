@@ -72,7 +72,8 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
     loss_ = AverageMeter()
 
     for idx, (img, class_lbl) in enumerate(loop):
-
+#        print(idx,img.shape,class_lbl)
+#        exit()
         img = img.cuda(non_blocking = True)
         lbl = class_lbl.cuda(non_blocking = True)
 
@@ -146,7 +147,27 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
 
     return TUR_samples
 
+class CustomTensorDataset(torch.utils.data.Dataset):
+    """TensorDataset with support of transforms.
+    """
+    def __init__(self, tensors, transform=None):
+        assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
+        self.tensors = tensors
+        self.transform = transform
 
+    def __getitem__(self, index):
+        x = self.tensors[0][index]
+
+        if self.transform:
+            x = self.transform(x)
+
+        y = self.tensors[1][index]
+
+        return x, y
+
+    def __len__(self):
+        return self.tensors[0].size(0)
+    
 if __name__ == '__main__':
 #    wandb.init(project = 'MinDiffusion')
     
@@ -189,6 +210,7 @@ if __name__ == '__main__':
         ds = tv.datasets.MNIST('data', True, transform = tr, download = True)
         img_size=(1,28,28)
         num_cls = 10
+        #print(dataset)
     if(dataset=="kmnist"):    
         ds = tv.datasets.KMNIST('data', True, transform = tr, download = True)        
         img_size=(1,28,28)
@@ -209,20 +231,23 @@ if __name__ == '__main__':
         img_size=(1,4,4)
         ds=eda(ddim,4*4).reshape(img_size)
     elif(dataset=="swissroll"):          
-        N=6000
+        #batchsize=32
+        batchsize=64
+        N=10000
         img_size=(1,28,28)
         ddim=28*28
         num_cls=10
         d,label=swissroll(N,ddim)
         label=np.array(label)
-        label=((label-min(label))/(max(label)-min(label))*num_cls).astype("int")
-        ds = torch.utils.data.TensorDataset( torch.Tensor(d),  torch.Tensor(label))
+        label=((label-min(label))/(max(label)-min(label))*num_cls).astype("int64")
+        ds = torch.utils.data.TensorDataset( torch.Tensor(d).reshape((N,)+img_size),  torch.Tensor(label).to(torch.int64))
     else:
         print("unsupported dataset {}".format(dataset))
+        #exit()
 
-#    print(ds.shape)
     loader = DataLoader(ds, batch_size = batchsize, shuffle = True, num_workers = 0)
-
+    print(len(loader.dataset))
+    
     unet = UNet(img_size[0], 128, num_cls).cuda()
 
     if(diftype=="SMLD"):
