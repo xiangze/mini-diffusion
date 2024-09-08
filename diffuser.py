@@ -80,10 +80,15 @@ class Diffuser(nn.Module):
     
 class DDPM(nn.Module):
 
-    def __init__(self, model, betas, T = 500, dropout_p = 0.1, scheduler_type = 'cosine'):
+    def __init__(self, model, betas, T = 500, dropout_p = 0.1, scheduler_type = 'cosine',isgpu=True):
         
         super().__init__() 
-        self.model = model.cuda()
+        self.isgpu=isgpu
+
+        self.model = model
+        
+        if(self.isgpu):
+            model= model.cuda()
 
         for k, v in ddpm_schedule(betas[0], betas[1], T, scheduler_type).items():
             self.register_buffer(k, v)
@@ -94,13 +99,18 @@ class DDPM(nn.Module):
     
     def forward(self, x, cls):
 
-        timestep = torch.randint(1, self.T, (x.shape[0], )).cuda()
+        timestep = torch.randint(1, self.T, (x.shape[0], ))
+        if(self.isgpu):
+            timestep = timestep.cuda()
+
         noise = torch.randn_like(x)
 
         x_t = (self.sqrt_abar_t[timestep, None, None, None] * x + self.sqrt_abar_t1[timestep, None, None, None] * noise)
 
-        ctx_mask = torch.bernoulli(torch.zeros_like(cls) + self.dropout_p).cuda()
-        
+        ctx_mask = torch.bernoulli(torch.zeros_like(cls) + self.dropout_p)
+        if(self.isgpu):        
+            ctx_mask =ctx_mask.cuda()
+
         return noise, x_t, cls, timestep / self.T, ctx_mask
 
     def A(self,x,t,eps,org=False):
@@ -111,11 +121,18 @@ class DDPM(nn.Module):
     
     def sample(self, num_samples, size=(1,28,28), num_cls=10, guide_w = 0.0):
 
-        x_i = torch.randn(num_samples, *size).cuda() 
-        c_i = torch.arange(0, num_cls).cuda()
+        x_i = torch.randn(num_samples, *size)
+        c_i = torch.arange(0, num_cls)
+        if(self.isgpu):
+            x_i = torch.randn(num_samples, *size).cuda() 
+            c_i = c_i.cuda()
+            
         c_i = c_i.repeat(int(num_samples / c_i.shape[0]))
 
-        ctx_mask = torch.zeros_like(c_i).cuda()
+        ctx_mask = torch.zeros_like(c_i)
+        if(self.isgpu):
+            ctx_mask = ctx_mask.cuda()    
+
         c_i = c_i.repeat(2)
         ctx_mask = ctx_mask.repeat(2)
         ctx_mask[num_samples:] = 1.0
@@ -126,13 +143,18 @@ class DDPM(nn.Module):
         # T, T-1,T-2 ...,1
         for i in range(self.T - 1, 0, -1):
             
-            t_is = torch.tensor([i / self.T]).cuda()
+            t_is = torch.tensor([i / self.T])
+            if(self.isgpu):
+                t_is = t_is.cuda()
+
             t_is = t_is.repeat(num_samples, 1, 1, 1)
 
             x_i = x_i.repeat(2, 1, 1, 1)   
             t_is = t_is.repeat(2, 1, 1, 1)
 
-            z = torch.randn(num_samples, *size).cuda() if i > 1 else 0
+            z = torch.randn(num_samples, *size) if i > 1 else 0
+            if(self.isgpu):
+                z=z.cuda()
 
             eps = self.model(x_i, c_i, t_is, ctx_mask)
             eps1 = eps[:num_samples]
@@ -158,7 +180,9 @@ class DDPM(nn.Module):
             eps: from Unet
             '''
             #x = x.repeat(2, 1, 1, 1)   
-            z = torch.randn(num_samples, *size).cuda() 
+            z = torch.randn(num_samples, *size)
+            if(self.isgpu):
+                z=z.cuda()
             x = x[:num_samples]
             return  x+ (-x+self.sqrt_alpha_t_inv[t] * (x - eps*self.alpha_t_div_sqrt_abar[t]) )*dt + self.sqrt_beta_t[t] * z*np.sqrt(dt)
   
@@ -168,6 +192,16 @@ class SMLD(Diffuser):
         
         for k, v in ddpm_schedule(betas[0], betas[1], T, scheduler_type).items():
             self.register_buffer(k, v)
+
+    def forward(self, x, cls):
+        timestep = torch.randint(1, self.T, (x.shape[0], )).cuda()
+        noise = torch.randn_like(x)
+
+        x_t = (self.sqrt_abar_t[timestep, None, None, None] * x + self.sqrt_abar_t1[timestep, None, None, None] * noise)
+
+        ctx_mask = torch.bernoulli(torch.zeros_like(cls) + self.dropout_p).cuda()
+        
+        return noise, x_t, cls, timestep / self.T, ctx_mask
 
     def A(self,x,t,eps):
         return self.betas[t]*eps
@@ -197,6 +231,7 @@ class SMLD(Diffuser):
         c_i = c_i.repeat(2)
         ctx_mask = ctx_mask.repeat(2)
         ctx_mask[num_samples:] = 1.0
+        
 
         #To Store intermediate results and create GIFs.
         x_is = []

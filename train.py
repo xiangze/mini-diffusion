@@ -17,6 +17,8 @@ from TURsample import TUR_sample
 from gendata import eda,swissroll
 import numpy as np 
 
+DEBUG=True
+
 class AverageMeter:
     def __init__(self, name=None):
         self.name = name
@@ -74,20 +76,29 @@ def train(unet:UNet, ddpm_model:DDPM, loader, opt, criterion, scaler, num_cls, s
     for idx, (img, class_lbl) in enumerate(loop):
 #        print(idx,img.shape,class_lbl)
 #        exit()
-        img = img.cuda(non_blocking = True)
-        lbl = class_lbl.cuda(non_blocking = True)
-
+        
+        lbl=class_lbl
         opt.zero_grad(set_to_none = True)
 
-        with torch.cuda.amp.autocast_mode.autocast():
-
+        if(DEBUG):
             noise, x_t, ctx, timestep, ctx_mask = ddpm_model(img, lbl)
-            pred = unet(x_t.half(), ctx, timestep.half(), ctx_mask.half())
+            pred = unet(x_t, ctx, timestep, ctx_mask)
             loss = criterion(noise, pred)
+            loss.backward()
+            opt.step()
+        else:
+            img = img.cuda(non_blocking = True)
+            lbl = lbl.cuda(non_blocking = True)
 
-        scaler.scale(loss).backward()
-        scaler.step(opt)
-        scaler.update()
+            with torch.cuda.amp.autocast_mode.autocast():
+
+                noise, x_t, ctx, timestep, ctx_mask = ddpm_model(img, lbl)
+                pred = unet(x_t.half(), ctx, timestep.half(), ctx_mask.half())
+                loss = criterion(noise, pred)
+                
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
 
 
 
@@ -183,7 +194,7 @@ if __name__ == '__main__':
     parser.add_argument('-sche', '--scheduler_type',default="linear")
     parser.add_argument('-bs', '--batchsize',default=64,type=int)
     parser.add_argument('-ds', '--dataset',default="mnist")    
-
+    parser.add_argument('-D', '--DEBUG',default=0,type=int)
     args = parser.parse_args()
 #    print(args)
     num_epochs = args.num_epochs
@@ -197,7 +208,7 @@ if __name__ == '__main__':
     batchsize=args.batchsize
     dataset=args.dataset
     suffix=diftype
-
+    DEBUG=args.DEBUG
 
     logfilename="log/TUR_log_skip{}sample{}epoch{}_{}_lr{}_{}".format(skip,TUR_samplenum,num_epochs,scheduler_type,lr,suffix)
     if (init_every_sample):
@@ -248,18 +259,26 @@ if __name__ == '__main__':
     loader = DataLoader(ds, batch_size = batchsize, shuffle = True, num_workers = 0)
     print(len(loader.dataset))
     
-    unet = UNet(img_size[0], 128, num_cls).cuda()
+    unet = UNet(img_size[0], 128, num_cls)
+    if(not DEBUG):
+        unet=unet.cuda()
 
     if(diftype=="SMLD"):
-        ddpm_model = SMLD(unet, (1e-4, 0.02),scheduler_type=scheduler_type).cuda()        
+        ddpm_model = SMLD(unet, (1e-4, 0.02),scheduler_type=scheduler_type)
     else:
-        ddpm_model = DDPM(unet, (1e-4, 0.02),scheduler_type=scheduler_type).cuda()
+        ddpm_model = DDPM(unet, (1e-4, 0.02),scheduler_type=scheduler_type,isgpu=not DEBUG)
+
+    if(not DEBUG):
+        ddpm_model=ddpm_model.cuda()
 
     opt = torch.optim.Adam(list(ddpm_model.parameters()) + list(unet.parameters()), lr =lr)
     criterion = nn.MSELoss()
 
-    scaler = torch.cuda.amp.grad_scaler.GradScaler()
-    
+    if(DEBUG):
+        scaler =None
+    else:
+        scaler = torch.cuda.amp.grad_scaler.GradScaler()
+
     ws = [0.0, 0.5, 1.0]
     
     for epoch in range(num_epochs):
